@@ -1,4 +1,6 @@
-﻿using BscTokenSniper.Handlers;
+﻿using BscTokenSniper.Data;
+using BscTokenSniper.Data.Entities;
+using BscTokenSniper.Handlers;
 using BscTokenSniper.Models;
 using Microsoft.Extensions.Hosting;
 using Microsoft.Extensions.Options;
@@ -35,14 +37,17 @@ namespace BscTokenSniper
         private readonly RugHandler _rugChecker;
         private readonly TradeHandler _tradeHandler;
         private readonly CancellationTokenSource _processingCancellation = new CancellationTokenSource(TimeSpan.FromSeconds(30));
+        private readonly SessionRepository _sessionRepository;
+        private Session _session;
 
-        public SniperService(IOptions<SniperConfiguration> options, RugHandler rugChecker, TradeHandler tradeHandler)
+        public SniperService(IOptions<SniperConfiguration> options, RugHandler rugChecker, TradeHandler tradeHandler, SessionRepository sessionRepository)
         {
             _sniperConfig = options.Value;
             _bscWeb3 = new Web3(url: _sniperConfig.BscHttpApi, account: new Account(_sniperConfig.WalletPrivateKey));
             _factoryContract = _bscWeb3.Eth.GetContract(File.ReadAllText("./Abis/PairCreated.json"), _sniperConfig.PancakeswapFactoryAddress);
             _rugChecker = rugChecker;
             _tradeHandler = tradeHandler;
+            _sessionRepository = sessionRepository;
         }
 
         private void CreateTokenPair(FilterLog log, Action<EventLog<PairCreatedEvent>> onNext)
@@ -57,6 +62,8 @@ namespace BscTokenSniper
 
         private async Task<EthLogsObservableSubscription> StartClient()
         {
+            _sessionRepository.Migrate();
+            _session = _sessionRepository.GetActiveSession(_sniperConfig);
             _client = new StreamingWebSocketClient(_sniperConfig.BscNode);
             var filter = _bscWeb3.Eth.GetEvent<PairCreatedEvent>(_sniperConfig.PancakeswapFactoryAddress).CreateFilterInput();
             var filterTransfers = Event<PairCreatedEvent>.GetEventABI().CreateFilterInput();

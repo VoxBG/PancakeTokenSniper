@@ -1,4 +1,6 @@
-﻿using BscTokenSniper.Models;
+﻿using BscTokenSniper.Data;
+using BscTokenSniper.Data.Entities;
+using BscTokenSniper.Models;
 using Fractions;
 using Microsoft.Extensions.Options;
 using Nethereum.Contracts;
@@ -22,13 +24,16 @@ namespace BscTokenSniper.Handlers
         private readonly Web3 _bscWeb3;
         private readonly Contract _pancakeContract;
         private readonly RugHandler _rugChecker;
-        private List<TokensOwned> _ownedTokenList = new();
+        private List<TokensOwnedEntity> _ownedTokenList = new();
         private bool _stopped;
         private readonly string _erc20Abi;
         private readonly string _pairAbi;
         private static BigInteger Max { get; } = BigInteger.Parse("115792089237316195423570985008687907853269984665640564039457584007913129639935");
+        private readonly EntityMapper _entityMapper;
+        private readonly SessionRepository _sessionRepository;
+        private Session _session;
 
-        public TradeHandler(IOptions<SniperConfiguration> options, RugHandler rugChecker)
+        public TradeHandler(IOptions<SniperConfiguration> options, RugHandler rugChecker, SessionRepository sessionRepository, EntityMapper entityMapper)
         {
             _sniperConfig = options.Value;
             _bscWeb3 = new Web3(url: _sniperConfig.BscHttpApi, account: new Account(_sniperConfig.WalletPrivateKey, new BigInteger(_sniperConfig.ChainId)));
@@ -37,6 +42,10 @@ namespace BscTokenSniper.Handlers
             _pairAbi = File.ReadAllText("./Abis/Pair.json");
             _pancakeContract = _bscWeb3.Eth.GetContract(File.ReadAllText("./Abis/Pancake.json"), _sniperConfig.PancakeswapRouterAddress);
             _rugChecker = rugChecker;
+            _entityMapper = entityMapper;
+            _sessionRepository = sessionRepository;
+            _session = sessionRepository.GetActiveSession(_sniperConfig);
+            _ownedTokenList.AddRange(sessionRepository.GetAllActiveSessionsTokensOwned());
             Start();
         }
 
@@ -61,7 +70,7 @@ namespace BscTokenSniper.Handlers
                     _sniperConfig.WalletAddress,
                     (DateTime.UtcNow.Ticks + _sniperConfig.TransactionRevertTimeSeconds));
                 var reciept = await _bscWeb3.TransactionManager.TransactionReceiptService.PollForReceiptAsync(buyReturnValue, new CancellationTokenSource(TimeSpan.FromMinutes(2)));
-                var sellPrice = await GetMarketPrice(new TokensOwned
+                var sellPrice = await GetMarketPrice(new TokensOwnedEntity
                 {
                     PairAddress = pairAddress,
                     TokenIdx = tokenIdx
@@ -76,7 +85,7 @@ namespace BscTokenSniper.Handlers
                     var balance = tokenIdx == 0 ? swapEvent.Amount0Out : swapEvent.Amount1Out;
                     var erc20Contract = _bscWeb3.Eth.GetContract(_erc20Abi, tokenAddress);
                     var decimals = await erc20Contract.GetFunction("decimals").CallAsync<int>();
-                    _ownedTokenList.Add(new TokensOwned
+                    var tokensOwnedEntity = new TokensOwnedEntity
                     {
                         Address = tokenAddress,
                         Amount = balance,
@@ -86,7 +95,10 @@ namespace BscTokenSniper.Handlers
                         PairAddress = pairAddress,
                         Decimals = decimals,
                         HoneypotCheck = honeypotCheck
-                    });
+                    };
+                    tokensOwnedEntity = _sessionRepository.AddTokensOwned(tokensOwnedEntity);
+                    _ownedTokenList.Add(tokensOwnedEntity);
+
                     return true;
                 }
                 return false;
@@ -98,7 +110,7 @@ namespace BscTokenSniper.Handlers
             }
         }
 
-        public TokensOwned GetOwnedTokens(string tokenAddress)
+        public TokensOwnedEntity GetOwnedTokens(string tokenAddress)
         {
             return _ownedTokenList.FirstOrDefault(t => t.Address == tokenAddress);
         }
@@ -116,7 +128,7 @@ namespace BscTokenSniper.Handlers
                     Value = Max
                 }, _sniperConfig.WalletAddress, gas, new HexBigInteger(BigInteger.Zero));
             }
-            catch (Exception e)
+            catch (Exception)
             {
                 Serilog.Log.Logger.Warning("Could not approve sell for {0}", tokenAddress);
             }
@@ -149,6 +161,7 @@ namespace BscTokenSniper.Handlers
                 if (swapEvent != null)
                 {
                     var item = _ownedTokenList.FirstOrDefault(t => t.Address == tokenAddress);
+                    _sessionRepository.RemoveTokensOwned(item);
                     _ownedTokenList.Remove(item);
                     return true;
                 }
@@ -161,7 +174,7 @@ namespace BscTokenSniper.Handlers
             }
         }
 
-        private BigInteger GetMarketPrice(Reserves price, TokensOwned ownedToken, BigInteger amount)
+        private BigInteger GetMarketPrice(Reserves price, TokensOwnedEntity ownedToken, BigInteger amount)
         {
             if (price.Reserve0 == 0 || price.Reserve1 == 0)
             {
@@ -172,7 +185,7 @@ namespace BscTokenSniper.Handlers
             return ((BigInteger)pricePerLiquidityToken.Multiply(amount));
         }
 
-        public async Task<BigInteger> GetMarketPrice(TokensOwned ownedToken, BigInteger amount)
+        public async Task<BigInteger> GetMarketPrice(TokensOwnedEntity ownedToken, BigInteger amount)
         {
             var price = await _rugChecker.GetReserves(ownedToken.PairAddress);
             return GetMarketPrice(price, ownedToken, amount);

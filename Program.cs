@@ -1,4 +1,5 @@
-﻿using BscTokenSniper.Handlers;
+﻿using BscTokenSniper.Data;
+using BscTokenSniper.Handlers;
 using BscTokenSniper.Models;
 using Microsoft.Extensions.DependencyInjection;
 using Microsoft.Extensions.Hosting;
@@ -31,10 +32,13 @@ namespace BscTokenSniper
 
             logger.Information("Running BSC Token Sniper with Args: @{args}", args);
             services.AddHttpClient();
+            //services.AddDbContext<BscTokenSniperDBContext, SqliteDBContext>();
             services.AddSingleton<TradeHandler>();
             services.AddSingleton<RugHandler>();
+            services.AddSingleton<EntityMapper>();
+            services.AddSingleton<SessionRepository>();
             services.Configure<SniperConfiguration>(config.GetSection("SniperConfiguration"));
-            services.AddHostedService<SniperService>();
+            //services.AddHostedService<SniperService>();
         });
 
     }
